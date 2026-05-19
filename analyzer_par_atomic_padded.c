@@ -1,13 +1,12 @@
-#define _GNU_SOURCE
-
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <omp.h>
 #include <time.h>
-#include "hash_table.h"
+#include "hash_table_padded.h"
 
 #define TABLE_SIZE 131071
+#define _GNU_SOURCE
 
 void loadManifest(HashTable* ht, const char* filename) {
     FILE* file = fopen(filename, "r");
@@ -28,37 +27,7 @@ void loadManifest(HashTable* ht, const char* filename) {
     fclose(file);
 }
 
-/*
- * Cria um array com um omp_lock_t por bucket da tabela hash.
- */
-omp_lock_t* createBucketLocks(size_t tableSize) {
-    omp_lock_t* locks = malloc(sizeof(omp_lock_t) * tableSize);
-    if (locks == NULL) {
-        fprintf(stderr, "Erro ao alocar locks\n");
-        exit(1);
-    }
-
-    for (size_t i = 0; i < tableSize; i++) {
-        omp_init_lock(&locks[i]);
-    }
-    return locks;
-}
-
-/*
- * Libera o array de locks por bucket.
- */
-void destroyBucketLocks(omp_lock_t* locks, size_t tableSize) {
-    for (size_t i = 0; i < tableSize; i++) {
-        omp_destroy_lock(&locks[i]);
-    }
-    free(locks);
-}
-
-/*
- * Processa o log em paralelo usando um lock por bucket.
- * Granularidade MÉDIA: threads só competem quando acessam o mesmo bucket.
- */
-void processLog(HashTable* ht, const char* filename, omp_lock_t* locks) {
+void processLog(HashTable* ht, const char* filename) {
     FILE* file = fopen(filename, "r");
     if (file == NULL) {
         printf("Erro ao abrir o log: %s\n", filename);
@@ -126,16 +95,10 @@ void processLog(HashTable* ht, const char* filename, omp_lock_t* locks) {
                 char httpMethod[16];
                 sscanf(methodUrl, "%s %s", httpMethod, url);
 
-                // OBS: ht_get e ht_get_hash recalculam o hash internamente.
-                // Trabalhamos com a API existente para manter modularidade;
-                // o custo é dois passes de djb2 + duas buscas na lista.
                 CacheNode* node = ht_get(ht, url);
                 if (node != NULL) {
-                    size_t bucket = ht_get_hash(ht, url);
-                    // Threads em buckets diferentes não bloqueiam umas às outras
-                    omp_set_lock(&locks[bucket]);
+                    #pragma omp atomic update
                     node->hit_count++;
-                    omp_unset_lock(&locks[bucket]);
                 }
             }
         }
@@ -145,9 +108,6 @@ void processLog(HashTable* ht, const char* filename, omp_lock_t* locks) {
     free(lineArray);
 }
 
-/*
- * Uso: ./analyzer_par_lock <arquivo_log>
- */
 int main(int argc, char* argv[]) {
     if (argc < 2) {
         printf("Uso: %s <arquivo_log>\n", argv[0]);
@@ -156,23 +116,21 @@ int main(int argc, char* argv[]) {
 
     struct timespec startTime, endTime;
     HashTable* ht = ht_create(TABLE_SIZE);
-    omp_lock_t* locks = createBucketLocks(TABLE_SIZE);
 
     loadManifest(ht, "cdn_data_logs/manifest.txt");
 
     clock_gettime(CLOCK_MONOTONIC, &startTime);
-    processLog(ht, argv[1], locks);
+    processLog(ht, argv[1]);
     clock_gettime(CLOCK_MONOTONIC, &endTime);
 
     double elapsedSec = (endTime.tv_sec - startTime.tv_sec)
                       + (endTime.tv_nsec - startTime.tv_nsec) / 1e9;
     printf("\ntempo de processamento do log: %.4f segundos.\n", elapsedSec);
 
-    destroyBucketLocks(locks, TABLE_SIZE);
     ht_save_results(ht, "results.csv");
     ht_destroy(ht);
 
     return 0;
 }
 
-// gcc -fopenmp -O2 -Wall analyzer_par_lock.c hash_table.c -o analyzer_par_lock
+// gcc -fopenmp -O2 -Wall analyzer_par_atomic_padded.c hash_table_padded.c -o analyzer_par_atomic_padded

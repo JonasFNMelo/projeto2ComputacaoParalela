@@ -1,81 +1,101 @@
-#include "hash_table.h"
+#define _GNU_SOURCE
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
+#include "hash_table.h"
 
-static void load_manifest(HashTable *ht, const char *path) {
-    FILE *f = fopen(path, "r");
-    if (!f) { perror("manifest"); exit(1); }
-    char buf[2048];
-    while (fgets(buf, sizeof(buf), f)) {
-        size_t n = strlen(buf);
-        while (n > 0 && (buf[n-1] == '\n' || buf[n-1] == '\r')) buf[--n] = 0;
-        if (n > 0) ht_insert(ht, buf);
+#define TABLE_SIZE 131071
+
+/*
+ * Lê o manifesto (uma URL por linha) e insere cada URL na tabela hash.
+ */
+void loadManifest(HashTable* ht, const char* filename) {
+    FILE* file = fopen(filename, "r");
+    if (file == NULL) {
+        printf("Erro ao abrir o manifest: %s\n", filename);
+        exit(1);
     }
-    fclose(f);
+
+    char lineBuffer[256];
+    int urlCount = 0;
+
+    while (fgets(lineBuffer, sizeof(lineBuffer), file)) {
+        // remove \r e \n do final
+        lineBuffer[strcspn(lineBuffer, "\r\n")] = '\0';
+        ht_insert(ht, lineBuffer);
+        urlCount++;
+    }
+    printf("Manifest carregado: %d URLs\n", urlCount);
+    fclose(file);
 }
 
-static void load_lines(const char *path, char ***out_lines,
-                       size_t *out_count, char **out_buf) {
-    FILE *f = fopen(path, "rb");
-    if (!f) { perror("log"); exit(1); }
-    fseek(f, 0, SEEK_END);
-    long sz = ftell(f);
-    fseek(f, 0, SEEK_SET);
-    char *buf = malloc(sz + 1);
-    if (fread(buf, 1, sz, f) != (size_t)sz) { perror("fread"); exit(1); }
-    buf[sz] = 0;
-    fclose(f);
+/*
+ * Processa o log linha a linha, sequencialmente, incrementando hit_count.
+ */
+void processLog(HashTable* ht, const char* filename) {
+    FILE* file = fopen(filename, "r");
+    if (file == NULL) {
+        printf("Erro ao abrir o log: %s\n", filename);
+        exit(1);
+    }
 
-    size_t count = 0;
-    for (long i = 0; i < sz; i++) if (buf[i] == '\n') count++;
-    if (sz > 0 && buf[sz-1] != '\n') count++;
+    char line[1024];
+    char url[512];
+    long lineCount = 0;
 
-    char **lines = malloc(sizeof(char*) * count);
-    size_t k = 0;
-    lines[k++] = buf;
-    for (long i = 0; i < sz; i++) {
-        if (buf[i] == '\n') {
-            buf[i] = 0;
-            if (i + 1 < sz) lines[k++] = &buf[i+1];
+    while (fgets(line, sizeof(line), file)) {
+        // pega o conteúdo entre o primeiro par de aspas: GET /path HTTP/1.1
+        strtok(line, "\"");
+        char* methodUrl = strtok(NULL, "\"");
+
+        if (methodUrl != NULL) {
+            char httpMethod[16];
+            sscanf(methodUrl, "%s %s", httpMethod, url);
+
+            CacheNode* node = ht_get(ht, url);
+            if (node != NULL) node->hit_count++;
+        }
+
+        lineCount++;
+        if (lineCount % 1000000 == 0) {
+            printf("Processadas: %ld milhoes de linhas\n", lineCount / 1000000);
         }
     }
-    *out_lines = lines;
-    *out_count = k;
-    *out_buf = buf;
+
+    printf("Log finalizado: %ld linhas no total\n", lineCount);
+    fclose(file);
 }
 
-static int extract_url(const char *line, char *out, size_t outsz) {
-    const char *q = strchr(line, '"');
-    if (!q) return 0;
-    q++;
-    while (*q && *q != ' ') q++;
-    if (*q != ' ') return 0;
-    q++;
-    size_t i = 0;
-    while (*q && *q != ' ' && i + 1 < outsz) out[i++] = *q++;
-    out[i] = 0;
-    return i > 0;
-}
-
-int main(int argc, char *argv[]) {
-    if (argc < 2) { fprintf(stderr, "uso: %s <log.txt>\n", argv[0]); return 1; }
-
-    HashTable *ht = ht_create(HT_DEFAULT_SIZE);
-    load_manifest(ht, "manifest.txt");
-
-    char **lines; size_t n; char *buf;
-    load_lines(argv[1], &lines, &n, &buf);
-
-    for (size_t i = 0; i < n; i++) {
-        char url[2048];
-        if (extract_url(lines[i], url, sizeof(url))) {
-            CacheNode *node = ht_get(ht, url);
-            if (node) node->hit_count++;
-        }
+/*
+ * Uso: ./analyzer_seq <arquivo_log>
+ * Ex.: ./analyzer_seq cdn_data_logs/log_distribuido.txt
+ */
+int main(int argc, char* argv[]) {
+    if (argc < 2) {
+        printf("Uso: %s <arquivo_log>\n", argv[0]);
+        return 1;
     }
+
+    struct timespec startTime, endTime;
+    HashTable* ht = ht_create(TABLE_SIZE);
+
+    // Carregamento do manifest FORA do cronômetro (consistente com versões paralelas)
+    loadManifest(ht, "cdn_data_logs/manifest.txt");
+
+    clock_gettime(CLOCK_MONOTONIC, &startTime);
+    processLog(ht, argv[1]);
+    clock_gettime(CLOCK_MONOTONIC, &endTime);
+
+    double elapsedSec = (endTime.tv_sec - startTime.tv_sec)
+                      + (endTime.tv_nsec - startTime.tv_nsec) / 1e9;
+    printf("\ntempo de processamento do log: %.4f segundos.\n", elapsedSec);
 
     ht_save_results(ht, "results.csv");
-    free(lines); free(buf); ht_destroy(ht);
+    ht_destroy(ht);
+
     return 0;
 }
+
+// gcc -O2 -Wall analyzer_seq.c hash_table.c -o analyzer_seq

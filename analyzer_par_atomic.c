@@ -1,86 +1,156 @@
-#include "hash_table.h"
+#define _GNU_SOURCE
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <omp.h>
+#include <time.h>
+#include "hash_table.h"
 
-static void load_manifest(HashTable *ht, const char *path) {
-    FILE *f = fopen(path, "r");
-    if (!f) { perror("manifest"); exit(1); }
-    char buf[2048];
-    while (fgets(buf, sizeof(buf), f)) {
-        size_t n = strlen(buf);
-        while (n > 0 && (buf[n-1] == '\n' || buf[n-1] == '\r')) buf[--n] = 0;
-        if (n > 0) ht_insert(ht, buf);
+#define TABLE_SIZE 131071
+
+/*
+ * Lê o manifesto (uma URL por linha) e insere cada URL na tabela hash.
+ * Esta fase é sequencial — só após isso a tabela é acessada concorrentemente.
+ */
+void loadManifest(HashTable* ht, const char* filename) {
+    FILE* file = fopen(filename, "r");
+    if (file == NULL) {
+        printf("Erro ao abrir o manifest: %s\n", filename);
+        exit(1);
     }
-    fclose(f);
-}
 
-static void load_lines(const char *path, char ***out_lines,
-                       size_t *out_count, char **out_buf) {
-    FILE *f = fopen(path, "rb");
-    if (!f) { perror("log"); exit(1); }
-    fseek(f, 0, SEEK_END);
-    long sz = ftell(f);
-    fseek(f, 0, SEEK_SET);
-    char *buf = malloc(sz + 1);
-    if (fread(buf, 1, sz, f) != (size_t)sz) { perror("fread"); exit(1); }
-    buf[sz] = 0;
-    fclose(f);
+    char lineBuffer[256];
+    int urlCount = 0;
 
-    size_t count = 0;
-    for (long i = 0; i < sz; i++) if (buf[i] == '\n') count++;
-    if (sz > 0 && buf[sz-1] != '\n') count++;
-
-    char **lines = malloc(sizeof(char*) * count);
-    size_t k = 0;
-    lines[k++] = buf;
-    for (long i = 0; i < sz; i++) {
-        if (buf[i] == '\n') {
-            buf[i] = 0;
-            if (i + 1 < sz) lines[k++] = &buf[i+1];
-        }
+    while (fgets(lineBuffer, sizeof(lineBuffer), file)) {
+        lineBuffer[strcspn(lineBuffer, "\r\n")] = '\0';
+        ht_insert(ht, lineBuffer);
+        urlCount++;
     }
-    *out_lines = lines;
-    *out_count = k;
-    *out_buf = buf;
+    printf("Manifest carregado: %d URLs\n", urlCount);
+    fclose(file);
 }
 
-static int extract_url(const char *line, char *out, size_t outsz) {
-    const char *q = strchr(line, '"');
-    if (!q) return 0;
-    q++;
-    while (*q && *q != ' ') q++;
-    if (*q != ' ') return 0;
-    q++;
-    size_t i = 0;
-    while (*q && *q != ' ' && i + 1 < outsz) out[i++] = *q++;
-    out[i] = 0;
-    return i > 0;
-}
+/*
+ * Processa o log em paralelo usando #pragma omp atomic update.
+ * A coerência de cache é garantida pela CPU (ex.: protocolo MESI).
+ */
+void processLog(HashTable* ht, const char* filename) {
+    FILE* file = fopen(filename, "r");
+    if (file == NULL) {
+        printf("Erro ao abrir o log: %s\n", filename);
+        exit(1);
+    }
 
-int main(int argc, char *argv[]) {
-    if (argc < 2) { fprintf(stderr, "uso: %s <log.txt>\n", argv[0]); return 1; }
+    // captura o tamanho do arquivo em bytes
+    fseek(file, 0, SEEK_END);
+    long fileSize = ftell(file);
+    rewind(file);
 
-    HashTable *ht = ht_create(HT_DEFAULT_SIZE);
-    load_manifest(ht, "manifest.txt");
+    // carrega o log inteiro em memória
+    char* rawText = malloc(fileSize + 1);
+    if (rawText == NULL) {
+        printf("Erro ao alocar memória, log: %s\n", filename);
+        fclose(file);
+        exit(1);
+    }
 
-    char **lines; size_t n; char *buf;
-    load_lines(argv[1], &lines, &n, &buf);
+    if (fread(rawText, 1, fileSize, file) == (size_t)fileSize) {
+        rawText[fileSize] = '\0';
+        fclose(file);
+    } else {
+        printf("Erro no carregamento do arquivo em memória.\n");
+        free(rawText);
+        fclose(file);
+        exit(1);
+    }
 
-    #pragma omp parallel for schedule(static)
-    for (size_t i = 0; i < n; i++) {
-        char url[2048];
-        if (extract_url(lines[i], url, sizeof(url))) {
-            CacheNode *node = ht_get(ht, url);
-            if (node) {
-                #pragma omp atomic update
-                node->hit_count++;
+    // conta quantas linhas o arquivo tem
+    long lineCount = 0;
+    for (long i = 0; i < fileSize; i++) {
+        if (rawText[i] == '\n') lineCount++;
+    }
+    if (fileSize > 0 && rawText[fileSize - 1] != '\n') {
+        lineCount++;
+    }
+
+    // monta vetor de ponteiros para o início de cada linha
+    char** lineArray = (char**)malloc(lineCount * sizeof(char*));
+    long lineIdx = 0;
+    lineArray[lineIdx++] = rawText; // primeira linha
+
+    for (long i = 0; i < fileSize; i++) {
+        if (rawText[i] == '\n') {
+            rawText[i] = '\0';
+            if (i + 1 < fileSize && lineIdx < lineCount) {
+                lineArray[lineIdx++] = &rawText[i + 1];
             }
         }
     }
 
+    printf("Log carregado: %ld linhas\n", lineCount);
+
+    // região paralela
+    #pragma omp parallel
+    {
+        #pragma omp single
+        printf("Threads ativas nesta região: %d\n", omp_get_num_threads());
+
+        #pragma omp for
+        for (long j = 0; j < lineIdx; j++) {
+            char url[512];
+            char* saveptr;
+
+            // strtok_r é thread-safe: mantém o estado em saveptr (local da thread)
+            strtok_r(lineArray[j], "\"", &saveptr);
+            char* methodUrl = strtok_r(NULL, "\"", &saveptr);
+
+            if (methodUrl != NULL) {
+                char httpMethod[16];
+                sscanf(methodUrl, "%s %s", httpMethod, url);
+
+                CacheNode* node = ht_get(ht, url);
+                if (node != NULL) {
+                    // Incremento atômico — a CPU garante coerência (MESI)
+                    #pragma omp atomic update
+                    node->hit_count++;
+                }
+            }
+        }
+    }
+
+    free(rawText);
+    free(lineArray);
+}
+
+/*
+ * Uso: ./analyzer_par_atomic <arquivo_log>
+ * Ex.: ./analyzer_par_atomic cdn_data_logs/log_distribuido.txt
+ */
+int main(int argc, char* argv[]) {
+    if (argc < 2) {
+        printf("Uso: %s <arquivo_log>\n", argv[0]);
+        return 1;
+    }
+
+    struct timespec startTime, endTime;
+    HashTable* ht = ht_create(TABLE_SIZE);
+
+    loadManifest(ht, "cdn_data_logs/manifest.txt");
+
+    clock_gettime(CLOCK_MONOTONIC, &startTime);
+    processLog(ht, argv[1]);
+    clock_gettime(CLOCK_MONOTONIC, &endTime);
+
+    double elapsedSec = (endTime.tv_sec - startTime.tv_sec)
+                      + (endTime.tv_nsec - startTime.tv_nsec) / 1e9;
+    printf("\ntempo de processamento do log: %.4f segundos.\n", elapsedSec);
+
     ht_save_results(ht, "results.csv");
-    free(lines); free(buf); ht_destroy(ht);
+    ht_destroy(ht);
+
     return 0;
 }
+
+// gcc -fopenmp -O2 -Wall analyzer_par_atomic.c hash_table.c -o analyzer_par_atomic
