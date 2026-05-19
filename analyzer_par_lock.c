@@ -149,11 +149,11 @@ int main(int argc, char* argv[]) {
     HashTable* ht = ht_create(TABLE_SIZE);
     omp_lock_t* locks = createBucketLocks(TABLE_SIZE);
 
+    loadManifest(ht, "cdn_data_logs/manifest.txt");
+    
     //Inicio do calculo do tempo
     clock_gettime(CLOCK_MONOTONIC, &startTime);
-    loadManifest(ht, "cdn_data_logs/manifest.txt");
     processLog(ht, argv[1], locks);
-
     //Fim do calculo do tempo
     clock_gettime(CLOCK_MONOTONIC, &endTime);
 

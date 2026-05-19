@@ -74,12 +74,10 @@ int main(int argc, char* argv[]) {
     struct timespec startTime, endTime;
     HashTable* ht = ht_create(TABLE_SIZE);
 
+    loadManifest(ht, "cdn_data_logs/manifest.txt");
     //Inicio do calculo do tempo
     clock_gettime(CLOCK_MONOTONIC, &startTime);
-
-    loadManifest(ht, "cdn_data_logs/manifest.txt");
     processLog(ht, argv[1]);
-
     //Fim do calculo do tempo
     clock_gettime(CLOCK_MONOTONIC, &endTime);
 
