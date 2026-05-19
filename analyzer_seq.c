@@ -1,5 +1,3 @@
-#define _GNU_SOURCE
-
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -7,23 +5,23 @@
 #include "hash_table.h"
 
 #define TABLE_SIZE 131071
+#define _GNU_SOURCE
 
-/*
- * Lê o manifesto (uma URL por linha) e insere cada URL na tabela hash.
- */
+//Le o manifesto e insere cada URL na tabela hash.
 void loadManifest(HashTable* ht, const char* filename) {
     FILE* file = fopen(filename, "r");
     if (file == NULL) {
         printf("Erro ao abrir o manifest: %s\n", filename);
         exit(1);
     }
-
+    //Instancia do buffer e do contador
     char lineBuffer[256];
     int urlCount = 0;
 
     while (fgets(lineBuffer, sizeof(lineBuffer), file)) {
         // remove \r e \n do final
         lineBuffer[strcspn(lineBuffer, "\r\n")] = '\0';
+        //Adciona a url no hash
         ht_insert(ht, lineBuffer);
         urlCount++;
     }
@@ -31,18 +29,16 @@ void loadManifest(HashTable* ht, const char* filename) {
     fclose(file);
 }
 
-/*
- * Processa o log linha a linha, sequencialmente, incrementando hit_count.
- */
+ // Processa o log linha a linha de forma sequencial, incrementando hit_count.
 void processLog(HashTable* ht, const char* filename) {
     FILE* file = fopen(filename, "r");
     if (file == NULL) {
         printf("Erro ao abrir o log: %s\n", filename);
-        exit(1);
+        return;
     }
 
     char line[1024];
-    char url[512];
+    char url[1024];
     long lineCount = 0;
 
     while (fgets(line, sizeof(line), file)) {
@@ -68,24 +64,23 @@ void processLog(HashTable* ht, const char* filename) {
     fclose(file);
 }
 
-/*
- * Uso: ./analyzer_seq <arquivo_log>
- * Ex.: ./analyzer_seq cdn_data_logs/log_distribuido.txt
- */
+//É necessario passar o path do log como argumento para a main
 int main(int argc, char* argv[]) {
     if (argc < 2) {
-        printf("Uso: %s <arquivo_log>\n", argv[0]);
+        printf("Erro, uso: %s <arquivo_log>\n", argv[0]);
         return 1;
     }
 
     struct timespec startTime, endTime;
     HashTable* ht = ht_create(TABLE_SIZE);
 
-    // Carregamento do manifest FORA do cronômetro (consistente com versões paralelas)
-    loadManifest(ht, "cdn_data_logs/manifest.txt");
-
+    //Inicio do calculo do tempo
     clock_gettime(CLOCK_MONOTONIC, &startTime);
+
+    loadManifest(ht, "cdn_data_logs/manifest.txt");
     processLog(ht, argv[1]);
+
+    //Fim do calculo do tempo
     clock_gettime(CLOCK_MONOTONIC, &endTime);
 
     double elapsedSec = (endTime.tv_sec - startTime.tv_sec)

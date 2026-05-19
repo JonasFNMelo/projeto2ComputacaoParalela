@@ -1,5 +1,3 @@
-#define _GNU_SOURCE
-
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -7,20 +5,24 @@
 #include <time.h>
 #include "hash_table.h"
 
+#define _GNU_SOURCE
 #define TABLE_SIZE 131071
 
+//Le o manifesto e insere cada URL na tabela hash.
 void loadManifest(HashTable* ht, const char* filename) {
     FILE* file = fopen(filename, "r");
     if (file == NULL) {
         printf("Erro ao abrir o manifest: %s\n", filename);
         exit(1);
     }
-
+    //Instancia do buffer e do contador
     char lineBuffer[256];
     int urlCount = 0;
 
     while (fgets(lineBuffer, sizeof(lineBuffer), file)) {
+        // remove \r e \n do final
         lineBuffer[strcspn(lineBuffer, "\r\n")] = '\0';
+        //Adciona a url no hash
         ht_insert(ht, lineBuffer);
         urlCount++;
     }
@@ -28,13 +30,12 @@ void loadManifest(HashTable* ht, const char* filename) {
     fclose(file);
 }
 
-/*
- * Cria um array com um omp_lock_t por bucket da tabela hash.
- */
+//Cria um array com um omp_lock_t por bucket da tabela hash.
 omp_lock_t* createBucketLocks(size_t tableSize) {
+    //Ponteiro do primeiri lock
     omp_lock_t* locks = malloc(sizeof(omp_lock_t) * tableSize);
     if (locks == NULL) {
-        fprintf(stderr, "Erro ao alocar locks\n");
+        fprintf(stderr, "Erro criação locks\n");
         exit(1);
     }
 
@@ -44,9 +45,7 @@ omp_lock_t* createBucketLocks(size_t tableSize) {
     return locks;
 }
 
-/*
- * Libera o array de locks por bucket.
- */
+//Libera o array de locks por bucket.
 void destroyBucketLocks(omp_lock_t* locks, size_t tableSize) {
     for (size_t i = 0; i < tableSize; i++) {
         omp_destroy_lock(&locks[i]);
@@ -54,10 +53,7 @@ void destroyBucketLocks(omp_lock_t* locks, size_t tableSize) {
     free(locks);
 }
 
-/*
- * Processa o log em paralelo usando um lock por bucket.
- * Granularidade MÉDIA: threads só competem quando acessam o mesmo bucket.
- */
+//Processa o log em paralelo usando um lock por bucket, threads só competem quando acessam o mesmo bucket.
 void processLog(HashTable* ht, const char* filename, omp_lock_t* locks) {
     FILE* file = fopen(filename, "r");
     if (file == NULL) {
@@ -126,9 +122,6 @@ void processLog(HashTable* ht, const char* filename, omp_lock_t* locks) {
                 char httpMethod[16];
                 sscanf(methodUrl, "%s %s", httpMethod, url);
 
-                // OBS: ht_get e ht_get_hash recalculam o hash internamente.
-                // Trabalhamos com a API existente para manter modularidade;
-                // o custo é dois passes de djb2 + duas buscas na lista.
                 CacheNode* node = ht_get(ht, url);
                 if (node != NULL) {
                     size_t bucket = ht_get_hash(ht, url);
@@ -145,9 +138,7 @@ void processLog(HashTable* ht, const char* filename, omp_lock_t* locks) {
     free(lineArray);
 }
 
-/*
- * Uso: ./analyzer_par_lock <arquivo_log>
- */
+//Uso: ./analyzer_par_lock <arquivo_log>
 int main(int argc, char* argv[]) {
     if (argc < 2) {
         printf("Uso: %s <arquivo_log>\n", argv[0]);
@@ -158,10 +149,12 @@ int main(int argc, char* argv[]) {
     HashTable* ht = ht_create(TABLE_SIZE);
     omp_lock_t* locks = createBucketLocks(TABLE_SIZE);
 
-    loadManifest(ht, "cdn_data_logs/manifest.txt");
-
+    //Inicio do calculo do tempo
     clock_gettime(CLOCK_MONOTONIC, &startTime);
+    loadManifest(ht, "cdn_data_logs/manifest.txt");
     processLog(ht, argv[1], locks);
+
+    //Fim do calculo do tempo
     clock_gettime(CLOCK_MONOTONIC, &endTime);
 
     double elapsedSec = (endTime.tv_sec - startTime.tv_sec)

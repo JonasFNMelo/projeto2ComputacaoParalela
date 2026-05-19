@@ -1,5 +1,3 @@
-#define _GNU_SOURCE
-
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -8,19 +6,23 @@
 #include "hash_table.h"
 
 #define TABLE_SIZE 131071
+#define _GNU_SOURCE
 
+//Le o manifesto e insere cada URL na tabela hash.
 void loadManifest(HashTable* ht, const char* filename) {
     FILE* file = fopen(filename, "r");
     if (file == NULL) {
         printf("Erro ao abrir o manifest: %s\n", filename);
         exit(1);
     }
-
+    //Instancia do buffer e do contador
     char lineBuffer[256];
     int urlCount = 0;
 
     while (fgets(lineBuffer, sizeof(lineBuffer), file)) {
+        // remove \r e \n do final
         lineBuffer[strcspn(lineBuffer, "\r\n")] = '\0';
+        //Adciona a url no hash
         ht_insert(ht, lineBuffer);
         urlCount++;
     }
@@ -28,10 +30,7 @@ void loadManifest(HashTable* ht, const char* filename) {
     fclose(file);
 }
 
-/*
- * Processa o log em paralelo usando #pragma omp critical (lock global único).
- * Granularidade GROSSA: apenas uma thread atualiza qualquer contador por vez.
- */
+//Processa o log em paralelo usando #pragma omp critical (lock global único), apenas uma thread atualiza qualquer contador por vez.
 void processLog(HashTable* ht, const char* filename) {
     FILE* file = fopen(filename, "r");
     if (file == NULL) {
@@ -39,10 +38,12 @@ void processLog(HashTable* ht, const char* filename) {
         exit(1);
     }
 
+    //Verifica o tamanho do arquivo em bytes
     fseek(file, 0, SEEK_END);
     long fileSize = ftell(file);
     rewind(file);
 
+    //Carrega logs na memória
     char* rawText = malloc(fileSize + 1);
     if (rawText == NULL) {
         printf("Erro ao alocar memória, log: %s\n", filename);
@@ -60,18 +61,21 @@ void processLog(HashTable* ht, const char* filename) {
         exit(1);
     }
 
+    //Conta o numero de linhas
     long lineCount = 0;
     for (long i = 0; i < fileSize; i++) {
         if (rawText[i] == '\n') lineCount++;
     }
+    //verificação se a ultima linha possui quebra linha
     if (fileSize > 0 && rawText[fileSize - 1] != '\n') {
         lineCount++;
     }
-
+    //Array que cada elemento aponta para uma linha
     char** lineArray = malloc(lineCount * sizeof(char*));
     long lineIdx = 0;
     lineArray[lineIdx++] = rawText;
 
+    //Atribuição dos ponteiros 
     for (long i = 0; i < fileSize; i++) {
         if (rawText[i] == '\n') {
             rawText[i] = '\0';
@@ -102,7 +106,7 @@ void processLog(HashTable* ht, const char* filename) {
 
                 CacheNode* node = ht_get(ht, url);
                 if (node != NULL) {
-                    // Lock global — todas as threads competem por esta região
+                    // Lock global, todas as threads competem por esta região
                     #pragma omp critical
                     {
                         node->hit_count++;
@@ -116,9 +120,7 @@ void processLog(HashTable* ht, const char* filename) {
     free(lineArray);
 }
 
-/*
- * Uso: ./analyzer_par_critical <arquivo_log>
- */
+//Exemplo de uso: ./analyzer_par_critical <arquivo_log>
 int main(int argc, char* argv[]) {
     if (argc < 2) {
         printf("Uso: %s <arquivo_log>\n", argv[0]);

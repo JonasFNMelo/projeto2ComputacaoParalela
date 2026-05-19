@@ -1,5 +1,3 @@
-#define _GNU_SOURCE
-
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -8,23 +6,23 @@
 #include "hash_table.h"
 
 #define TABLE_SIZE 131071
+#define _GNU_SOURCE
 
-/*
- * Lê o manifesto (uma URL por linha) e insere cada URL na tabela hash.
- * Esta fase é sequencial — só após isso a tabela é acessada concorrentemente.
- */
+//Le o manifesto e insere cada URL na tabela hash.
 void loadManifest(HashTable* ht, const char* filename) {
     FILE* file = fopen(filename, "r");
     if (file == NULL) {
         printf("Erro ao abrir o manifest: %s\n", filename);
         exit(1);
     }
-
+    //Instancia do buffer e do contador
     char lineBuffer[256];
     int urlCount = 0;
 
     while (fgets(lineBuffer, sizeof(lineBuffer), file)) {
+        // remove \r e \n do final
         lineBuffer[strcspn(lineBuffer, "\r\n")] = '\0';
+        //Adciona a url no hash
         ht_insert(ht, lineBuffer);
         urlCount++;
     }
@@ -32,10 +30,8 @@ void loadManifest(HashTable* ht, const char* filename) {
     fclose(file);
 }
 
-/*
- * Processa o log em paralelo usando #pragma omp atomic update.
- * A coerência de cache é garantida pela CPU (ex.: protocolo MESI).
- */
+
+//Processa o log em paralelo usando #pragma omp atomic update.
 void processLog(HashTable* ht, const char* filename) {
     FILE* file = fopen(filename, "r");
     if (file == NULL) {
@@ -124,10 +120,7 @@ void processLog(HashTable* ht, const char* filename) {
     free(lineArray);
 }
 
-/*
- * Uso: ./analyzer_par_atomic <arquivo_log>
- * Ex.: ./analyzer_par_atomic cdn_data_logs/log_distribuido.txt
- */
+//Uso: ./analyzer_par_atomic <arquivo_log>
 int main(int argc, char* argv[]) {
     if (argc < 2) {
         printf("Uso: %s <arquivo_log>\n", argv[0]);
