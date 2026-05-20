@@ -8,43 +8,66 @@
 // --- Estruturas de Dados ---
 
 /*
- * Nó da Tabela Hash (também usado para encadeamento em caso de colisão).
- * Os nomes dos campos (url, hit_count, next) são mantidos pois fazem parte
- * da especificação do projeto (PDF seção 4) e são acessados diretamente
- * pelos analyzers.
+ * Nó da Tabela Hash (também usado para encadeamento em caso de colisão)
  */
 typedef struct CacheNode {
     char* url;                // Chave
-    long hit_count;           // Valor (contador atualizado concorrentemente)
-    struct CacheNode* next;   // Próximo nó em caso de colisão
+    long hit_count;           // Valor (o contador que será incrementado)
+    struct CacheNode* next;   // Ponteiro para o próximo nó em caso de colisão
+
+#ifdef USE_PADDING
+    // padding adicionado para o Experimento C (false sharing)
+    // força cada nó a ocupar uma linha de cache completa (64 bytes)
+    long padding[5];
+#endif
 } CacheNode;
 
 /*
- * Estrutura principal da Tabela Hash.
+ * Estrutura principal da Tabela Hash
  */
 typedef struct {
-    size_t size;          // Número de buckets
-    CacheNode** table;    // Array de ponteiros para CacheNode
+    size_t size;          // Tamanho total da tabela (número de "buckets")
+    CacheNode** table;    // O array de ponteiros para CacheNode (os "buckets")
 } HashTable;
 
 
 // --- Interface Pública (API) ---
-// Os nomes ht_create / ht_insert / ht_get / ht_save_results são exigidos
-// pelo enunciado (PDF seção 4.1) e não podem ser alterados.
-
-HashTable* ht_create(size_t size);
-void       ht_destroy(HashTable* ht);
-void       ht_insert(HashTable* ht, const char* url);
-CacheNode* ht_get(HashTable* ht, const char* url);
-void       ht_save_results(HashTable* ht, const char* filename);
 
 /*
- * Retorna o índice (bucket) calculado para uma URL.
- * Usado pelo analyzer_par_lock para selecionar o lock correspondente.
+ * Cria uma nova Tabela Hash com um tamanho (size) específico.
  */
-size_t     ht_get_hash(HashTable* ht, const char* url);
+HashTable* ht_create(size_t size);
 
-/* Função auxiliar de depuração. */
-void       ht_print(HashTable* ht);
+/*
+ * Libera toda a memória associada à Tabela Hash.
+ */
+void ht_destroy(HashTable* ht);
+
+/*
+ * Insere um novo par (url, hit_count) na tabela.
+ */
+void ht_put(HashTable* ht, const char* url);
+
+/*
+ * Busca um nó na Tabela Hash pela URL.
+ */
+CacheNode* ht_get(HashTable* ht, const char* url);
+
+/*
+ * Salva os resultados (URL, hit_count) da tabela em um arquivo CSV.
+ */
+void ht_save_results(HashTable* ht, const char* filename);
+
+/*
+ * Função de depuração: Imprime o estado da tabela.
+ */
+void ht_print(HashTable* ht);
+
+/*
+ * Retorna o índice do bucket de uma URL.
+ * Usada pelo analyzer_par_lock para saber qual lock adquirir.
+ */
+size_t ht_bucket_of(HashTable* ht, const char* url);
+
 
 #endif // HASH_TABLE_H

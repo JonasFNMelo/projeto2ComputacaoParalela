@@ -1,12 +1,12 @@
 #include "hash_table.h"
 
-// --- Funções Privadas ---
+// --- Constantes Internas ---
 
-/*
- * Função de Hash (djb2).
- * Fonte: http://www.cse.yorku.ca/~oz/hash.html
- */
-static size_t hashDjb2(const char* str, size_t size) {
+// Função de Hash (djb2)
+// Converte uma string (URL) em um índice para a tabela.
+// Fonte: http://www.cse.yorku.ca/~oz/hash.html
+static size_t hash_djb2(const char* str, size_t size)
+{
     unsigned long hash = 5381;
     int c;
 
@@ -17,10 +17,9 @@ static size_t hashDjb2(const char* str, size_t size) {
     return hash % size;
 }
 
-/*
- * Cria um novo nó de cache (auxiliar).
- */
-static CacheNode* createNode(const char* url) {
+// Cria um novo nó (função auxiliar interna)
+static CacheNode* criar_no(const char* url)
+{
     CacheNode* node = (CacheNode*)malloc(sizeof(CacheNode));
     if (!node) {
         perror("Erro ao alocar CacheNode");
@@ -42,7 +41,8 @@ static CacheNode* createNode(const char* url) {
 
 // --- Implementação da API Pública ---
 
-HashTable* ht_create(size_t size) {
+HashTable* ht_create(size_t size)
+{
     if (size < 1) {
         fprintf(stderr, "Tamanho da tabela deve ser ao menos 1\n");
         return NULL;
@@ -54,7 +54,7 @@ HashTable* ht_create(size_t size) {
         return NULL;
     }
 
-    // calloc inicializa todos os buckets como NULL
+    // calloc inicializa todos os ponteiros (buckets) como NULL
     ht->table = (CacheNode**)calloc(size, sizeof(CacheNode*));
     if (!ht->table) {
         perror("Erro ao alocar buckets da tabela");
@@ -66,16 +66,17 @@ HashTable* ht_create(size_t size) {
     return ht;
 }
 
-void ht_destroy(HashTable* ht) {
+void ht_destroy(HashTable* ht)
+{
     if (!ht) return;
 
     for (size_t i = 0; i < ht->size; i++) {
-        CacheNode* current = ht->table[i];
-        while (current) {
-            CacheNode* next = current->next;
-            free(current->url);
-            free(current);
-            current = next;
+        CacheNode* cur = ht->table[i];
+        while (cur) {
+            CacheNode* prox = cur->next;
+            free(cur->url);
+            free(cur);
+            cur = prox;
         }
     }
 
@@ -83,47 +84,48 @@ void ht_destroy(HashTable* ht) {
     free(ht);
 }
 
-void ht_insert(HashTable* ht, const char* url) {
+void ht_put(HashTable* ht, const char* url)
+{
     if (!ht || !url) return;
 
-    size_t index = hashDjb2(url, ht->size);
+    size_t idx = hash_djb2(url, ht->size);
 
-    // Se a chave já existe, não faz nada (manifest deve ter URLs únicas).
-    CacheNode* current = ht->table[index];
-    while (current) {
-        if (strcmp(current->url, url) == 0) {
-            return;
-        }
-        current = current->next;
+    // Verifica se já existe (não duplica)
+    CacheNode* cur = ht->table[idx];
+    while (cur) {
+        if (strcmp(cur->url, url) == 0) return;
+        cur = cur->next;
     }
 
-    // Insere no início da lista encadeada (bucket).
-    CacheNode* newNode = createNode(url);
-    newNode->next = ht->table[index];
-    ht->table[index] = newNode;
+    // Insere no início da lista do bucket
+    CacheNode* novo = criar_no(url);
+    novo->next = ht->table[idx];
+    ht->table[idx] = novo;
 }
 
-CacheNode* ht_get(HashTable* ht, const char* url) {
+CacheNode* ht_get(HashTable* ht, const char* url)
+{
     if (!ht || !url) return NULL;
 
-    size_t index = hashDjb2(url, ht->size);
+    size_t idx = hash_djb2(url, ht->size);
 
-    CacheNode* current = ht->table[index];
-    while (current) {
-        if (strcmp(current->url, url) == 0) {
-            return current;
-        }
-        current = current->next;
+    CacheNode* cur = ht->table[idx];
+    while (cur) {
+        if (strcmp(cur->url, url) == 0) return cur;
+        cur = cur->next;
     }
 
     return NULL;
 }
 
-void ht_save_results(HashTable* ht, const char* filename) {
-    if (!ht || !filename) {
-        fprintf(stderr, "Erro: tabela ou nome de arquivo nulo ao salvar resultados.\n");
-        return;
-    }
+size_t ht_bucket_of(HashTable* ht, const char* url)
+{
+    return hash_djb2(url, ht->size);
+}
+
+void ht_save_results(HashTable* ht, const char* filename)
+{
+    if (!ht || !filename) return;
 
     FILE* fp = fopen(filename, "w");
     if (!fp) {
@@ -132,38 +134,27 @@ void ht_save_results(HashTable* ht, const char* filename) {
     }
 
     for (size_t i = 0; i < ht->size; i++) {
-        CacheNode* current = ht->table[i];
-        while (current) {
-            fprintf(fp, "%s,%ld\n", current->url, current->hit_count);
-            current = current->next;
+        CacheNode* cur = ht->table[i];
+        while (cur) {
+            fprintf(fp, "%s,%ld\n", cur->url, cur->hit_count);
+            cur = cur->next;
         }
     }
 
     fclose(fp);
 }
 
-size_t ht_get_hash(HashTable* ht, const char* url) {
-    if (!ht || !url) {
-        fprintf(stderr, "Erro em ht_get_hash: tabela ou URL nula.\n");
-        exit(EXIT_FAILURE);
-    }
-    return hashDjb2(url, ht->size);
-}
-
-void ht_print(HashTable* ht) {
+void ht_print(HashTable* ht)
+{
     if (!ht) return;
     printf("--- Estado da Tabela Hash (Size: %zu) ---\n", ht->size);
     for (size_t i = 0; i < ht->size; i++) {
+        if (!ht->table[i]) continue;
         printf("Bucket[%zu]: ", i);
-        CacheNode* current = ht->table[i];
-        if (!current) {
-            printf("~ VAZIO ~\n");
-            continue;
-        }
-
-        while (current) {
-            printf("[\"%s\" (%ld)] -> ", current->url, current->hit_count);
-            current = current->next;
+        CacheNode* cur = ht->table[i];
+        while (cur) {
+            printf("[\"%s\" (%ld)] -> ", cur->url, cur->hit_count);
+            cur = cur->next;
         }
         printf("NULL\n");
     }
